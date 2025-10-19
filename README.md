@@ -35,7 +35,7 @@ This enables efficient transfer of entire block volumes to object storage, usefu
 * Efficient streaming of raw block data
 * Supports large volumes / snapshots
 * Plug-in support for encryption
-* Works with standard S3 or S3-compatible endpoints
+* Works with S3-compatible endpoints
 * Configurable via environment variables
 * Minimal dependencies, designed to be lightweight
 
