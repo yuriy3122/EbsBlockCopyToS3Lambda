@@ -10,8 +10,6 @@
 * [Features](#features)
 * [Use Cases](#use-cases)
 * [Architecture & Design](#architecture--design)
-* [Prerequisites](#prerequisites)
-* [Deployment](#deployment)
 * [Configuration & Environment Variables](#configuration--environment-variables)
 * [Invocation / Usage](#invocation--usage)
 * [Permissions & IAM Role](#permissions--iam-role)
@@ -72,22 +70,6 @@ Simplified flow:
 * The AWS SDK for .NET
 * (Optional) KMS key if you plan to use server-side encryption
 * (Optional) S3 endpoint or S3-compatible storage credentials
-
----
-
-## Deployment
-
-1. Clone this repository
-2. Build the Lambda project (`dotnet build` / `dotnet publish`)
-3. Package the output into a ZIP (including all dependencies)
-4. Create a new Lambda function (or update an existing)
-
-   * Use the runtime environment matching your build (e.g. .NET 6)
-   * Upload the ZIP artifact
-5. Set the appropriate environment variables (see next section)
-6. Grant Lambda an IAM role with required permissions
-7. Configure triggers (API Gateway, EventBridge, manual invocation)
-8. Test your function
 
 ---
 
