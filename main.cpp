@@ -10,7 +10,6 @@
 
 #include <zlib.h>
 #include "minizip/zip.h"
-
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -21,8 +20,6 @@
 #include <stdexcept>
 #include <sstream>
 #include <cstdint>
-
-// C++17 / C++20 headers
 #include <span>         // C++20: std::span for ZipData
 #include <string_view>  // C++17: std::string_view for Base64Encode
 
@@ -30,7 +27,6 @@ using namespace aws::lambda_runtime;
 using Aws::String;
 
 // -----------------------------------------------------------------------------
-// Modernization notes (C++17 / C++20):
 // - Base64Encode uses std::string_view to avoid unnecessary copies.
 // - ZipData uses std::span<uint8_t const> as a safe view over raw buffers (C++20).
 // - [[nodiscard]] added to functions whose result must not be ignored.
@@ -38,8 +34,6 @@ using Aws::String;
 // - std::chrono_literals (1s) used instead of magic millisecond constants.
 // - Removed const_cast when calling DownloadEbsBlock from async lambda.
 // -----------------------------------------------------------------------------
-
-// ------------------------- Data structures -------------------------
 
 struct BlockHash {
     int BlockIndex;
@@ -59,8 +53,7 @@ struct InputParams {
     int PartId = 0;
 };
 
-static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 // C++17: use std::string_view to avoid copying the input buffer.
 // [[nodiscard]] warns if the caller ignores the encoded result.
@@ -150,24 +143,12 @@ static int ZCALLBACK mem_error(voidpf, voidpf) { return 0; }
     }
 
     zip_fileinfo zi{};
-    const int retOpen = zipOpenNewFileInZip2(
-        zf,
-        "zip.txt",
-        &zi,
-        nullptr,
-        0,
-        nullptr,
-        0,
-        nullptr,
-        Z_DEFLATED,
-        Z_BEST_COMPRESSION,
-        0
-    );
+    const int retOpen = zipOpenNewFileInZip2(zf, "zip.txt", &zi, nullptr, 0, nullptr, 0, nullptr, Z_DEFLATED, Z_BEST_COMPRESSION, 0);
     if (retOpen != ZIP_OK) {
         zipClose(zf, nullptr);
         throw std::runtime_error("zipOpenNewFileInZip2 failed");
     }
-
+    
     const int retWrite = zipWriteInFileInZip(
         zf,
         buffer.data(),
@@ -313,7 +294,6 @@ void UploadBlockHashData(
 
     append_int(static_cast<int>(blockHashes.size()));
 
-    // C++17 structured bindings: more readable access to key/value.
     for (const auto& [index, hash] : blockHashes) {
         append_int(index);
         const uint16_t len = static_cast<uint16_t>(hash.size());
@@ -420,8 +400,7 @@ void UploadEbsBlockBatch(
 
 void RunFunction(const InputParams& input) {
     using namespace std::chrono;
-    using namespace std::chrono_literals; // C++14/17/20: enables 1s, 500ms, etc.
-
+    using namespace std::chrono_literals;
     const int EbsBlockSize           = 512 * 1024;
     const int EbsBlockBatchSize      = 100;
     const int ListEbsBlocksMaxResult = 1000;
@@ -455,8 +434,6 @@ void RunFunction(const InputParams& input) {
     auto ebsBlockHashTable = DownloadBlockHashData(s3Client, input);
 
     const auto start = steady_clock::now();
-
-    // 1000 / 100 = 10 batches per part
     const int perPartBatches = ListEbsBlocksMaxResult / EbsBlockBatchSize;
 
     for (int i = 0; i < perPartBatches; ++i) {
@@ -498,7 +475,6 @@ void RunFunction(const InputParams& input) {
                 const int thisOffset = offset;
                 offset += EbsBlockSize;
 
-                // NOTE: ebsClient is non-const and shared safely here.
                 tasks.emplace_back(std::async(std::launch::async,
                     [&ebsClient, &input, &blk, thisOffset, &buffer, EbsBlockSize]() {
                         return DownloadEbsBlock(
@@ -524,10 +500,8 @@ void RunFunction(const InputParams& input) {
 
             const auto sw1_end = steady_clock::now();
             const auto elapsed = sw1_end - sw1_start;
-
-            // C++14/17/20 chrono literals: sleep until at least 1 second per "block batch"
             if (elapsed < 1s) {
-                std::this_thread::sleep_for(1s - elapsed); // similar to Task.Delay in C#
+                std::this_thread::sleep_for(1s - elapsed);
             }
         }
 
