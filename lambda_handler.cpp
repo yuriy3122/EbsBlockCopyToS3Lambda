@@ -8,8 +8,8 @@ int main() {
     Aws::SDKOptions options;
     Aws::InitAPI(options);
 
-    std::string inputStr((std::istreambuf_iterator<char>(std::cin)),
-                         std::istreambuf_iterator<char>());
+    std::string inputStr((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
+    
     JsonValue in(inputStr);
     if (!in.WasParseSuccessful()) {
         std::cerr << "Invalid JSON\n";
@@ -32,11 +32,14 @@ int main() {
     out.WithInteger("BlocksProcessed", result.blocksProcessed);
 
     Aws::Array<JsonValue> arr(result.uploadedKeys.size());
+    
     for (size_t i = 0; i < result.uploadedKeys.size(); i++)
         arr[i].AsString(result.uploadedKeys[i]);
+    
     out.WithArray("UploadedKeys", arr);
 
     std::cout << out.View().WriteReadable();
     Aws::ShutdownAPI(options);
+    
     return 0;
 }
