@@ -22,10 +22,24 @@
 #include <sstream>
 #include <cstdint>
 
+// C++17 / C++20 headers
+#include <span>         // C++20: std::span for ZipData
+#include <string_view>  // C++17: std::string_view for Base64Encode
+
 using namespace aws::lambda_runtime;
 using Aws::String;
 
-// ------------------------- Структуры данных -------------------------
+// -----------------------------------------------------------------------------
+// Modernization notes (C++17 / C++20):
+// - Base64Encode uses std::string_view to avoid unnecessary copies.
+// - ZipData uses std::span<uint8_t const> as a safe view over raw buffers (C++20).
+// - [[nodiscard]] added to functions whose result must not be ignored.
+// - Structured bindings (C++17) used when iterating over unordered_map<int, std::string>.
+// - std::chrono_literals (1s) used instead of magic millisecond constants.
+// - Removed const_cast when calling DownloadEbsBlock from async lambda.
+// -----------------------------------------------------------------------------
+
+// ------------------------- Data structures -------------------------
 
 struct BlockHash {
     int BlockIndex;
@@ -45,22 +59,31 @@ struct InputParams {
     int PartId = 0;
 };
 
-static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char b64_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-std::string Base64Encode(const std::string& in) {
+// C++17: use std::string_view to avoid copying the input buffer.
+// [[nodiscard]] warns if the caller ignores the encoded result.
+[[nodiscard]] std::string Base64Encode(std::string_view in) {
     std::string out;
     int val = 0;
     int valb = -6;
-    for (uint8_t c : in) {
-        val = (val << 8) + c;
+
+    // Use unsigned char to avoid sign-extension issues.
+    for (unsigned char c : in) {
+        val = (val << 8) + static_cast<unsigned int>(c);
         valb += 8;
         while (valb >= 0) {
             out.push_back(b64_table[(val >> valb) & 0x3F]);
             valb -= 6;
         }
     }
-    if (valb > -6) out.push_back(b64_table[((val << 8) >> (valb + 8)) & 0x3F]);
-    while (out.size() % 4) out.push_back('=');
+    if (valb > -6) {
+        out.push_back(b64_table[((val << 8) >> (valb + 8)) & 0x3F]);
+    }
+    while (out.size() % 4) {
+        out.push_back('=');
+    }
     return out;
 }
 
@@ -74,7 +97,7 @@ static voidpf ZCALLBACK mem_open(voidpf opaque, const char* /*filename*/, int /*
 
 static uLong ZCALLBACK mem_write(voidpf opaque, voidpf /*stream*/, const void* buf, uLong size) {
     auto* mem = reinterpret_cast<ZipMemBuffer*>(opaque);
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(buf);
+    const auto* p = reinterpret_cast<const uint8_t*>(buf);
     mem->data.insert(mem->data.end(), p, p + size);
     return size;
 }
@@ -98,6 +121,7 @@ static long ZCALLBACK mem_seek(voidpf opaque, voidpf /*stream*/, uLong offset, i
     }
 
     if (newPos != current) {
+        // We do not support random seek in this in-memory implementation.
         return -1;
     }
     return 0;
@@ -106,10 +130,12 @@ static long ZCALLBACK mem_seek(voidpf opaque, voidpf /*stream*/, uLong offset, i
 static int ZCALLBACK mem_close(voidpf, voidpf) { return 0; }
 static int ZCALLBACK mem_error(voidpf, voidpf) { return 0; }
 
-std::vector<uint8_t> ZipData(const uint8_t* buffer, size_t size) {
+// C++20: std::span is used to pass a non-owning view of the buffer.
+// [[nodiscard]]: caller is expected to use the compressed buffer.
+[[nodiscard]] std::vector<uint8_t> ZipData(std::span<const uint8_t> buffer) {
     ZipMemBuffer mem;
 
-    zlib_filefunc_def filefunc32 = {};
+    zlib_filefunc_def filefunc32{};
     filefunc32.zopen_file = mem_open;
     filefunc32.zwrite_file = mem_write;
     filefunc32.ztell_file = mem_tell;
@@ -123,25 +149,31 @@ std::vector<uint8_t> ZipData(const uint8_t* buffer, size_t size) {
         throw std::runtime_error("zipOpen2 failed");
     }
 
-    zip_fileinfo zi = {};
-    int ret = zipOpenNewFileInZip2(
+    zip_fileinfo zi{};
+    const int retOpen = zipOpenNewFileInZip2(
         zf,
         "zip.txt",
         &zi,
-        nullptr, 0,
-        nullptr, 0,
+        nullptr,
+        0,
+        nullptr,
+        0,
         nullptr,
         Z_DEFLATED,
         Z_BEST_COMPRESSION,
         0
     );
-    if (ret != ZIP_OK) {
+    if (retOpen != ZIP_OK) {
         zipClose(zf, nullptr);
         throw std::runtime_error("zipOpenNewFileInZip2 failed");
     }
 
-    ret = zipWriteInFileInZip(zf, buffer, static_cast<uLong>(size));
-    if (ret != ZIP_OK) {
+    const int retWrite = zipWriteInFileInZip(
+        zf,
+        buffer.data(),
+        static_cast<uLong>(buffer.size())
+    );
+    if (retWrite != ZIP_OK) {
         zipCloseFileInZip(zf);
         zipClose(zf, nullptr);
         throw std::runtime_error("zipWriteInFileInZip failed");
@@ -179,7 +211,7 @@ BlockHash DownloadEbsBlock(
     const Aws::EBS::Model::Block& block,
     uint8_t* buffer,
     int offset,
-    int ebsBlockSize)
+    int /*ebsBlockSize*/)
 {
     Aws::EBS::Model::GetSnapshotBlockRequest req;
     req.SetSnapshotId(snapshotId);
@@ -189,11 +221,11 @@ BlockHash DownloadEbsBlock(
     auto outcome = ebsClient.GetSnapshotBlock(req);
     if (!outcome.IsSuccess()) {
         throw std::runtime_error("GetSnapshotBlock failed: " +
-                outcome.GetError().GetMessage());
+                                 outcome.GetError().GetMessage());
     }
 
-    auto result = std::move(outcome.GetResultWithOwnership());
-    int dataLen = result.GetDataLength();
+    auto result = outcome.GetResultWithOwnership();
+    const int dataLen = result.GetDataLength();
     auto& body = result.GetBlockData();
 
     body.read(reinterpret_cast<char*>(buffer + offset), dataLen);
@@ -230,8 +262,8 @@ std::unordered_map<int, std::string> DownloadBlockHashData(
     std::string data((std::istreambuf_iterator<char>(stream)),
                      std::istreambuf_iterator<char>());
 
-    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data.data());
-    size_t size = data.size();
+    const auto* ptr  = reinterpret_cast<const uint8_t*>(data.data());
+    const size_t size = data.size();
     size_t pos = 0;
 
     if (size < sizeof(int)) return hashes;
@@ -255,7 +287,7 @@ std::unordered_map<int, std::string> DownloadBlockHashData(
         std::string hash(reinterpret_cast<const char*>(ptr + pos), len);
         pos += len;
 
-        hashes[index] = hash;
+        hashes[index] = std::move(hash);
     }
 
     return hashes;
@@ -267,6 +299,7 @@ void UploadBlockHashData(
     const std::unordered_map<int, std::string>& blockHashes)
 {
     std::string data;
+
     auto append_int = [&](int value) {
         char buf[sizeof(int)];
         std::memcpy(buf, &value, sizeof(int));
@@ -280,11 +313,10 @@ void UploadBlockHashData(
 
     append_int(static_cast<int>(blockHashes.size()));
 
-    for (const auto& kv : blockHashes) {
-        append_int(kv.first);
-
-        const std::string& hash = kv.second;
-        uint16_t len = static_cast<uint16_t>(hash.size());
+    // C++17 structured bindings: more readable access to key/value.
+    for (const auto& [index, hash] : blockHashes) {
+        append_int(index);
+        const uint16_t len = static_cast<uint16_t>(hash.size());
         append_ushort(len);
         data.append(hash.data(), hash.size());
     }
@@ -295,7 +327,7 @@ void UploadBlockHashData(
     req.SetKey(key);
 
     auto stream = Aws::MakeShared<Aws::StringStream>("UploadBlockHashData");
-    stream->write(data.data(), data.size());
+    stream->write(data.data(), static_cast<std::streamsize>(data.size()));
     req.SetBody(stream);
 
     auto outcome = s3.PutObject(req);
@@ -311,13 +343,14 @@ void UploadChangedBlockIndices(
     const std::vector<int>& changedBlockIndices)
 {
     std::string data;
+
     auto append_int = [&](int value) {
         char buf[sizeof(int)];
         std::memcpy(buf, &value, sizeof(int));
         data.append(buf, sizeof(int));
     };
 
-    int header = 1;
+    const int header = 1;
     append_int(header);
     append_int(static_cast<int>(changedBlockIndices.size()));
 
@@ -332,7 +365,7 @@ void UploadChangedBlockIndices(
     req.SetKey(key);
 
     auto stream = Aws::MakeShared<Aws::StringStream>("UploadChangedBlockIndices");
-    stream->write(data.data(), data.size());
+    stream->write(data.data(), static_cast<std::streamsize>(data.size()));
     req.SetBody(stream);
 
     auto outcome = s3.PutObject(req);
@@ -357,7 +390,8 @@ void UploadEbsBlockBatch(
     req.SetKey(key);
 
     auto stream = Aws::MakeShared<Aws::StringStream>("UploadEbsBlockBatch");
-    stream->write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    stream->write(reinterpret_cast<const char*>(buffer.data()),
+                  static_cast<std::streamsize>(buffer.size()));
     req.SetBody(stream);
 
     Aws::S3::Model::Tag tag;
@@ -371,6 +405,7 @@ void UploadEbsBlockBatch(
     req.SetTagging(tagging);
 
     if (!input.EncryptionKey.empty()) {
+        // C++17 std::string_view constructor from const char*.
         std::string b64 = Base64Encode(input.EncryptionKey.c_str());
         req.SetSSECustomerAlgorithm("AES256");
         req.SetSSECustomerKey(b64.c_str());
@@ -385,6 +420,7 @@ void UploadEbsBlockBatch(
 
 void RunFunction(const InputParams& input) {
     using namespace std::chrono;
+    using namespace std::chrono_literals; // C++14/17/20: enables 1s, 500ms, etc.
 
     const int EbsBlockSize           = 512 * 1024;
     const int EbsBlockBatchSize      = 100;
@@ -418,19 +454,20 @@ void RunFunction(const InputParams& input) {
 
     auto ebsBlockHashTable = DownloadBlockHashData(s3Client, input);
 
-    auto start = steady_clock::now();
+    const auto start = steady_clock::now();
 
-    // 1000 / 100 = 10 батчей по 100 блоков
+    // 1000 / 100 = 10 batches per part
     const int perPartBatches = ListEbsBlocksMaxResult / EbsBlockBatchSize;
 
     for (int i = 0; i < perPartBatches; ++i) {
         std::vector<Aws::EBS::Model::Block> blocks;
+        blocks.reserve(EbsBlockBatchSize);
 
-        int startIndex = listReq.GetStartingBlockIndex() + i * EbsBlockBatchSize;
-        int endIndex   = startIndex + EbsBlockBatchSize;
+        const int startIndex = listReq.GetStartingBlockIndex() + i * EbsBlockBatchSize;
+        const int endIndex   = startIndex + EbsBlockBatchSize;
 
         for (const auto& blk : listResp.GetBlocks()) {
-            int bi = blk.GetBlockIndex();
+            const int bi = blk.GetBlockIndex();
             if (bi >= startIndex && bi < endIndex) {
                 blocks.push_back(blk);
             }
@@ -439,29 +476,33 @@ void RunFunction(const InputParams& input) {
         if (blocks.empty())
             continue;
 
-        int count = static_cast<int>(
+        const int count = static_cast<int>(
             (blocks.size() + BlockRequestBatchSize - 1) / BlockRequestBatchSize);
 
         int offset = 0;
         std::vector<BlockHash> changedBlocks;
+        changedBlocks.reserve(blocks.size());
 
         for (int j = 0; j < count; ++j) {
-            auto sw1_start = steady_clock::now();
+            const auto sw1_start = steady_clock::now();
 
-            int beginIdx = j * BlockRequestBatchSize;
-            int endIdxB  = std::min<int>(beginIdx + BlockRequestBatchSize,
-                                         static_cast<int>(blocks.size()));
+            const int beginIdx = j * BlockRequestBatchSize;
+            const int endIdxB  = std::min<int>(beginIdx + BlockRequestBatchSize,
+                                               static_cast<int>(blocks.size()));
 
             std::vector<std::future<BlockHash>> tasks;
+            tasks.reserve(endIdxB - beginIdx);
+
             for (int k = beginIdx; k < endIdxB; ++k) {
                 const auto& blk = blocks[k];
-                int thisOffset = offset;
+                const int thisOffset = offset;
                 offset += EbsBlockSize;
 
+                // NOTE: ebsClient is non-const and shared safely here.
                 tasks.emplace_back(std::async(std::launch::async,
                     [&ebsClient, &input, &blk, thisOffset, &buffer, EbsBlockSize]() {
                         return DownloadEbsBlock(
-                            const_cast<Aws::EBS::EBSClient&>(ebsClient),
+                            ebsClient,
                             input.SnapshotId,
                             blk,
                             buffer.data(),
@@ -481,29 +522,30 @@ void RunFunction(const InputParams& input) {
                 }
             }
 
-            auto sw1_end = steady_clock::now();
-            auto elapsedMs =
-                duration_cast<milliseconds>(sw1_end - sw1_start).count();
+            const auto sw1_end = steady_clock::now();
+            const auto elapsed = sw1_end - sw1_start;
 
-            if (elapsedMs < 1000) {
-                std::this_thread::sleep_for(
-                    milliseconds(1000 - elapsedMs)); // аналог Task.Delay
+            // C++14/17/20 chrono literals: sleep until at least 1 second per "block batch"
+            if (elapsed < 1s) {
+                std::this_thread::sleep_for(1s - elapsed); // similar to Task.Delay in C#
             }
         }
 
         if (!changedBlocks.empty()) {
             for (size_t j = 0; j < changedBlocks.size(); ++j) {
                 std::memcpy(
-                    changedBlockBuffer.data() + j * EbsBlockSize,
+                    changedBlockBuffer.data() + static_cast<ptrdiff_t>(j) * EbsBlockSize,
                     buffer.data() + changedBlocks[j].Offset,
-                    EbsBlockSize);
+                    static_cast<size_t>(EbsBlockSize));
             }
 
-            std::vector<uint8_t> cmpBuffer =
-                ZipData(changedBlockBuffer.data(),
-                        changedBlocks.size() * EbsBlockSize);
+            // C++20 std::span: safe view over contiguous data.
+            const size_t totalSize = changedBlocks.size() * static_cast<size_t>(EbsBlockSize);
+            std::span<const uint8_t> spanData{changedBlockBuffer.data(), totalSize};
 
-            int blockBatchIndex = perPartBatches * input.PartId + i;
+            std::vector<uint8_t> cmpBuffer = ZipData(spanData);
+
+            const int blockBatchIndex = perPartBatches * input.PartId + i;
 
             UploadEbsBlockBatch(s3Client, input, blockBatchIndex, cmpBuffer);
         }
@@ -515,10 +557,10 @@ void RunFunction(const InputParams& input) {
         UploadBlockHashData(s3Client, input, ebsBlockHashTable);
     }
 
-    auto end = steady_clock::now();
-    auto elapsed = duration_cast<milliseconds>(end - start).count();
-    if (elapsed < 1000) {
-        std::this_thread::sleep_for(milliseconds(1000 - elapsed));
+    const auto end = steady_clock::now();
+    const auto totalElapsed = end - start;
+    if (totalElapsed < 1s) {
+        std::this_thread::sleep_for(1s - totalElapsed);
     }
 }
 
@@ -528,6 +570,7 @@ invocation_response handler(invocation_request const& req) {
         RunFunction(input);
         return invocation_response::success("", "application/json");
     } catch (const std::exception& ex) {
+        // The error message is propagated back to Lambda as FunctionError.
         return invocation_response::failure(ex.what(), "FunctionError");
     }
 }
