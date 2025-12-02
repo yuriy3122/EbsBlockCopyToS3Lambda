@@ -1,5 +1,3 @@
-// main.cpp
-
 #include <aws/core/Aws.h>
 #include <aws/core/utils/json/JsonSerializer.h>
 #include <aws/lambda-runtime/runtime.h>
@@ -47,10 +45,7 @@ struct InputParams {
     int PartId = 0;
 };
 
-// ------------------------ Base64 для SSE-C ключа --------------------
-
-static const char b64_table[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 std::string Base64Encode(const std::string& in) {
     std::string out;
@@ -68,8 +63,6 @@ std::string Base64Encode(const std::string& in) {
     while (out.size() % 4) out.push_back('=');
     return out;
 }
-
-// ---------------------- ZIP в память (zlib + minizip) ----------------
 
 struct ZipMemBuffer {
     std::vector<uint8_t> data;
@@ -91,8 +84,6 @@ static long ZCALLBACK mem_tell(voidpf opaque, voidpf /*stream*/) {
     return static_cast<long>(mem->data.size());
 }
 
-// Для записи ZIP фактически seek практически не нужен,
-// оставляем примитивную реализацию.
 static long ZCALLBACK mem_seek(voidpf opaque, voidpf /*stream*/, uLong offset, int origin) {
     auto* mem = reinterpret_cast<ZipMemBuffer*>(opaque);
     size_t current = mem->data.size();
@@ -107,8 +98,6 @@ static long ZCALLBACK mem_seek(voidpf opaque, voidpf /*stream*/, uLong offset, i
     }
 
     if (newPos != current) {
-        // minizip при записи обычно двигается только вперёд,
-        // если вдруг понадобится — тут нужно будет расширять/обрезать буфер.
         return -1;
     }
     return 0;
@@ -117,7 +106,6 @@ static long ZCALLBACK mem_seek(voidpf opaque, voidpf /*stream*/, uLong offset, i
 static int ZCALLBACK mem_close(voidpf, voidpf) { return 0; }
 static int ZCALLBACK mem_error(voidpf, voidpf) { return 0; }
 
-// Аналог C# ZipData: один entry в ZIP, все данные подряд.
 std::vector<uint8_t> ZipData(const uint8_t* buffer, size_t size) {
     ZipMemBuffer mem;
 
@@ -138,7 +126,7 @@ std::vector<uint8_t> ZipData(const uint8_t* buffer, size_t size) {
     zip_fileinfo zi = {};
     int ret = zipOpenNewFileInZip2(
         zf,
-        "zip.txt",        // имя файла внутри архива (как в C#)
+        "zip.txt",
         &zi,
         nullptr, 0,
         nullptr, 0,
@@ -165,8 +153,6 @@ std::vector<uint8_t> ZipData(const uint8_t* buffer, size_t size) {
     return mem.data;
 }
 
-// ------------------------ Парсинг JSON во вход ----------------------
-
 InputParams ParseInput(const String& json) {
     Aws::Utils::Json::JsonValue root(json);
     if (!root.WasParseSuccessful()) {
@@ -186,8 +172,6 @@ InputParams ParseInput(const String& json) {
     p.PartId = v.GetInteger("PartId");
     return p;
 }
-
-// ----------------------------- AWS helpers --------------------------
 
 BlockHash DownloadEbsBlock(
     Aws::EBS::EBSClient& ebsClient,
@@ -237,7 +221,6 @@ std::unordered_map<int, std::string> DownloadBlockHashData(
 
     auto outcome = s3.GetObject(req);
     if (!outcome.IsSuccess()) {
-        // как в C#: просто возвращаем пустой словарь при ошибке
         return hashes;
     }
 
@@ -377,7 +360,6 @@ void UploadEbsBlockBatch(
     stream->write(reinterpret_cast<const char*>(buffer.data()), buffer.size());
     req.SetBody(stream);
 
-    // Тег
     Aws::S3::Model::Tag tag;
     String tagKey = input.UserData.empty() ? "calamu" : input.UserData;
     tag.SetKey(tagKey);
@@ -388,7 +370,6 @@ void UploadEbsBlockBatch(
     tagging.SetTagSet(tags);
     req.SetTagging(tagging);
 
-    // SSE-C (как в C# — base64 ключа)
     if (!input.EncryptionKey.empty()) {
         std::string b64 = Base64Encode(input.EncryptionKey.c_str());
         req.SetSSECustomerAlgorithm("AES256");
@@ -401,8 +382,6 @@ void UploadEbsBlockBatch(
                                  outcome.GetError().GetMessage());
     }
 }
-
-// -------------------- Основная логика (аналог FunctionHandler) ------
 
 void RunFunction(const InputParams& input) {
     using namespace std::chrono;
@@ -542,8 +521,6 @@ void RunFunction(const InputParams& input) {
         std::this_thread::sleep_for(milliseconds(1000 - elapsed));
     }
 }
-
-// ----------------------- Lambda handler + main ----------------------
 
 invocation_response handler(invocation_request const& req) {
     try {
