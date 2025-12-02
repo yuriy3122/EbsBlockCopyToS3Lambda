@@ -5,9 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(lambda_entry
-    lambda_entry.cpp
-    block_processor.cpp
-    s3_client.cpp
+    main.cpp
 )
 
 # AWS SDK for C++:
